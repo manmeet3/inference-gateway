@@ -4,6 +4,7 @@ This project is a production-oriented LLM inference gateway that accepts client 
 
 ## Request Flow
 
+```
 +------------------+
 | Client Request   |
 +--------+---------+
@@ -59,6 +60,7 @@ This project is a production-oriented LLM inference gateway that accepts client 
 | Celery + Redis   |
 | async jobs       |
 +------------------+
+```
 
 # Phase 1
 ## Claude Prompt

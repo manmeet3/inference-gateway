@@ -55,6 +55,7 @@ production on AWS EKS and be maintained by a team.
 - **Local dev**: docker-compose (app + postgres + redis + ollama)
 
 ## Directory Structure
+```
 gateway/
 ├── app/
 │   ├── main.py                  # FastAPI app, lifespan, middleware
@@ -113,6 +114,7 @@ gateway/
 ├── Dockerfile
 └── .github/workflows/
     └── deploy.yaml              # CI: test → build → push ECR → deploy EKS
+```
 
 ## Key Design Constraints
 - All provider API keys come from environment variables only — never in code

@@ -61,6 +61,7 @@ production on AWS EKS and be maintained by a team.
 
 ## Directory Structure
 
+```
 gateway/
 ├── app/
 │   ├── main.py                  # FastAPI app, lifespan, middleware
@@ -119,6 +120,7 @@ gateway/
 ├── Dockerfile
 └── .github/workflows/
     └── deploy.yaml              # CI: test → build → push ECR → deploy EKS
+```
 
 ---
 
