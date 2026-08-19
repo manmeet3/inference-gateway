@@ -1,11 +1,11 @@
 import time
 
-import httpx
 import structlog
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.providers.base import Message
+from app.routing.strategies import AllProvidersFailedError
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
@@ -17,7 +17,8 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    model: str
+    # Optional: when omitted the router classifies the query and picks a backend.
+    model: str | None = None
     messages: list[ChatMessage]
     user_id: str
 
@@ -32,38 +33,51 @@ class ChatResponse(BaseModel):
 
 @router.post("/v1/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest, request: Request):
-    structlog.contextvars.bind_contextvars(user_id=body.user_id, model=body.model)
+    structlog.contextvars.bind_contextvars(user_id=body.user_id, requested_model=body.model)
 
     start = time.monotonic()
     messages = [Message(role=m.role, content=m.content) for m in body.messages]
 
     try:
-        result = await request.app.state.ollama.complete(messages, body.model)
-    except ValueError as exc:
-        logger.warning("model_not_found", error=str(exc))
-        raise HTTPException(status_code=400, detail={"error": "model_not_found", "message": str(exc)})
-    except httpx.ConnectError as exc:
-        logger.error("provider_unavailable", error=str(exc))
-        raise HTTPException(status_code=503, detail={"error": "provider_unavailable", "message": "Ollama unreachable"})
-    except Exception as exc:
-        logger.error("provider_error", error=str(exc))
-        raise HTTPException(status_code=503, detail={"error": "provider_error", "message": str(exc)})
+        result = await request.app.state.router.route(messages, requested_model=body.model)
+    except AllProvidersFailedError as exc:
+        latency_ms = round((time.monotonic() - start) * 1000, 2)
+        logger.error(
+            "all_providers_failed",
+            providers_attempted=exc.attempted,
+            latency_ms=latency_ms,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "all_providers_unavailable",
+                "message": "no upstream provider could serve the request",
+                "providers_attempted": exc.attempted,
+            },
+        )
 
     latency_ms = round((time.monotonic() - start) * 1000, 2)
+    resp = result.response
+    fell_back = len(result.providers_attempted) > 1
 
     logger.info(
         "request_complete",
-        tokens_in=result.tokens_in,
-        tokens_out=result.tokens_out,
+        provider=resp.provider,
+        model_used=resp.model,
+        classification=result.classification,
+        providers_attempted=result.providers_attempted,
+        fallback=fell_back,
+        fallback_reason=result.fallback_reason if fell_back else None,
+        tokens_in=resp.tokens_in,
+        tokens_out=resp.tokens_out,
         latency_ms=latency_ms,
         cache_hit=False,
-        provider="ollama",
     )
 
     return ChatResponse(
-        response=result.content,
-        model_used=result.model,
+        response=resp.content,
+        model_used=resp.model,
         latency_ms=latency_ms,
-        tokens_in=result.tokens_in,
-        tokens_out=result.tokens_out,
+        tokens_in=resp.tokens_in,
+        tokens_out=resp.tokens_out,
     )

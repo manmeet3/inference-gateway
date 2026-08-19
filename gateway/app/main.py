@@ -11,11 +11,43 @@ from app.config import get_settings
 from app.db.session import close_db, init_db
 from app.observability.logging import configure_logging
 from app.observability.tracing import configure_tracing
+from app.providers.anthropic import AnthropicProvider
 from app.providers.ollama import OllamaProvider
+from app.providers.openai import OpenAIProvider
+from app.routing.classifier import ComplexityClassifier
+from app.routing.router import Router
+from app.routing.strategies import CostStrategy, FallbackChain
 
 # Configure logging at import time so all module-level loggers are ready.
 configure_logging(get_settings().log_level)
 logger = structlog.get_logger(__name__)
+
+
+def _build_router(settings, providers) -> Router:
+    default_models = {
+        "ollama": settings.ollama_default_model,
+        "anthropic": settings.anthropic_model,
+        "openai": settings.openai_model,
+    }
+    model_owner = {
+        settings.anthropic_model: "anthropic",
+        settings.openai_model: "openai",
+    }
+    # Cost-first routing: simple stays local, complex prefers cloud; both fall
+    # through the same chain so an outage degrades gracefully.
+    chains = {
+        "simple": ["ollama", "anthropic", "openai"],
+        "complex": ["anthropic", "openai", "ollama"],
+    }
+    return Router(
+        providers=providers,
+        default_models=default_models,
+        model_owner=model_owner,
+        classifier=ComplexityClassifier(settings.classifier_complex_char_threshold),
+        strategy=CostStrategy(chains),
+        fallback_chain=FallbackChain(providers),
+        fallback_order=["ollama", "anthropic", "openai"],
+    )
 
 
 @asynccontextmanager
@@ -34,18 +66,29 @@ async def lifespan(app: FastAPI):
     await app.state.redis.ping()
     logger.info("redis_ready")
 
-    app.state.ollama = OllamaProvider(settings.ollama_base_url)
-    logger.info("providers_ready", ollama_url=settings.ollama_base_url)
+    # Local provider is always present; cloud providers only when keyed.
+    providers = {"ollama": OllamaProvider(settings.ollama_base_url)}
+    if settings.anthropic_api_key:
+        providers["anthropic"] = AnthropicProvider(
+            settings.anthropic_api_key, settings.anthropic_base_url, settings.cloud_max_tokens
+        )
+    if settings.openai_api_key:
+        providers["openai"] = OpenAIProvider(settings.openai_api_key, settings.openai_base_url)
+
+    app.state.providers = providers
+    app.state.router = _build_router(settings, providers)
+    logger.info("providers_ready", providers=list(providers))
 
     yield
 
-    await app.state.ollama.close()
+    for provider in app.state.providers.values():
+        await provider.close()
     await app.state.redis.aclose()
     await close_db()
     logger.info("shutdown_complete")
 
 
-app = FastAPI(title="LLM Inference Gateway", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="LLM Inference Gateway", version="0.2.0", lifespan=lifespan)
 
 
 @app.middleware("http")

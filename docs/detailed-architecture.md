@@ -201,3 +201,159 @@ What is intentionally absent (built in later phases):
 - No routing logic — all requests go directly to Ollama
 - No streaming endpoint
 - No Prometheus metrics
+
+# Phase 2
+
+## Claude Prompt
+Start Phase 2 — Routing and Fallback:
+  1. Add Anthropic and OpenAI provider implementations (unified LLMProvider interface, httpx)
+  2. RoutingConfig: routing rules in config, not hardcoded
+  3. Task complexity classifier — heuristic (token/char count, keyword signals)
+  4. CostStrategy: route simple/cheap queries to Ollama, complex to cloud
+  5. FallbackChain: if a provider fails or times out, try the next in the chain
+  6. Log which provider was selected and why on every request
+
+Decisions locked with the user: implement **both** Anthropic and OpenAI;
+models **`claude-sonnet-5`** and **`gpt-4o`**; **cost-first** routing —
+simple→Ollama, complex→cloud, fallback chain Ollama → Anthropic → OpenAI.
+All providers use httpx (not vendor SDKs) so they stay uniform behind the
+`LLMProvider` interface. Streaming stays out (Phase 5).
+
+## What was built
+
+### New components
+
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| Anthropic provider | `app/providers/anthropic.py` | Calls `POST /v1/messages` via httpx. System prompt is lifted to the top-level `system` field; response text/usage mapped to `LLMResponse`. |
+| OpenAI provider | `app/providers/openai.py` | Calls `POST /chat/completions` via httpx. Maps `choices[0].message.content` and `usage` to `LLMResponse`. |
+| Complexity classifier | `app/routing/classifier.py` | `ComplexityClassifier.classify(messages)` → `"simple"` or `"complex"` from user-message length + keyword signals. Threshold is configurable. |
+| Cost strategy | `app/routing/strategies.py` | `CostStrategy.select(complexity)` → ordered list of provider names to try. Chains come from config. |
+| Fallback chain | `app/routing/strategies.py` | `FallbackChain.execute(candidates, messages)` — tries each `(provider, model)` in order, falling through on `ProviderError`; returns the first success plus which providers were attempted and the fallback reason. Raises `AllProvidersFailedError` if none succeed. |
+| Router | `app/routing/router.py` | Orchestrates: if a `model` is named, route to its owning provider first; otherwise classify and use the cost strategy. Filters candidates to registered providers, then runs the fallback chain. |
+
+### Changed from Phase 1
+
+- `app/providers/base.py` — added `ProviderError` (carries a stable `reason`
+  code), a `provider` field on `LLMResponse`, and a `name` attribute on
+  providers.
+- `app/providers/ollama.py` — now raises `ProviderError` (instead of
+  `ValueError` / bare httpx errors) so the fallback chain can catch and route
+  around it.
+- `app/config.py` — cloud API keys, model IDs, base URLs, `cloud_max_tokens`,
+  and the classifier threshold — all from env vars.
+- `app/main.py` — the lifespan builds a provider registry (Ollama always;
+  Anthropic/OpenAI only when their key is set) and assembles the `Router`.
+- `app/api/routes/chat.py` — routes through the `Router`; `model` is now
+  **optional** (omit it to let the router classify and choose); the completion
+  log line now carries `provider`, `model_used`, `classification`,
+  `providers_attempted`, `fallback`, and `fallback_reason`.
+
+### Request flow (Phase 2)
+
+```
+POST /v1/chat
+   │
+   ▼
+Router.route(messages, requested_model)
+   │
+   ├─ model named?  ── yes ─▶ owning provider first, then fallback order
+   │                  no  ─▶ ComplexityClassifier → CostStrategy chain
+   ▼
+filter candidates to registered providers (cloud absent when unkeyed)
+   ▼
+FallbackChain: try (provider, model) in order, fall through on ProviderError
+   ▼
+first success → response + {provider, classification, fallback_reason}
+all fail → AllProvidersFailedError → HTTP 503
+```
+
+## Configuring cloud providers
+
+Keys come from env vars only — never in code. Leave a key blank to disable that
+provider; routing degrades gracefully to whatever is configured (Ollama-only is
+a valid setup).
+
+```bash
+# .env (local) or exported before `docker compose up`
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+```
+
+`docker-compose.yml` passes `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` through from
+the host environment (blank if unset). Model IDs default to `claude-sonnet-5`
+and `gpt-4o` and are overridable via `ANTHROPIC_MODEL` / `OPENAI_MODEL`.
+
+## How it was tested
+
+### Routing unit tests (no LLM calls)
+
+The routing layer is tested in isolation with in-memory fake providers — no
+network, no real models — satisfying the design constraint that routing be
+unit-testable.
+
+```bash
+cd gateway
+pip install -r requirements-dev.txt
+pytest
+```
+
+Coverage (12 tests, all passing): classifier simple/complex/keyword cases;
+`CostStrategy` chain selection; `FallbackChain` first-success, fall-through, and
+all-fail; and `Router` behavior for simple→Ollama, complex→Anthropic, explicit
+model → owning provider, skipping unavailable providers, and falling back on a
+provider error.
+
+### End-to-end validation
+
+Start the stack (Ollama-only works with no cloud keys):
+```bash
+docker compose up --build
+```
+
+**Simple query → local Ollama** (classified `simple`):
+```bash
+curl -s -X POST http://localhost:8000/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"What is 2+2?"}],"user_id":"u1"}'
+```
+Log line shows `classification: "simple"`, `provider: "ollama"`, `fallback: false`.
+
+**Complex query → cloud** (classified `complex`; needs a cloud key set, else it
+degrades to Ollama via the fallback chain):
+```bash
+curl -s -X POST http://localhost:8000/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Analyze and explain the trade-offs of microservices vs a monolith in detail."}],"user_id":"u1"}'
+```
+With a cloud key set: `classification: "complex"`, `provider: "anthropic"`.
+Without one: the complex chain (`anthropic → openai → ollama`) filters to the
+registered providers and Ollama serves it — graceful degradation.
+
+**Explicit model override** — route straight to a provider:
+```bash
+curl -s -X POST http://localhost:8000/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"user_id":"u1"}'
+```
+
+**Fallback on outage** — stop the primary and watch the chain route around it:
+```bash
+docker compose stop ollama
+curl -s -X POST http://localhost:8000/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"hi"}],"user_id":"u1"}'
+# With a cloud key set: served by the next provider in the chain,
+#   log shows fallback: true, fallback_reason: "provider_unavailable".
+# With no cloud keys: 503 all_providers_unavailable (nothing left to try).
+docker compose start ollama
+```
+
+## Phase 2 scope boundaries
+
+Still intentionally absent (later phases):
+- No caching — `cache_hit` is always `false` (Phase 3)
+- No rate limiting or quotas (Phase 4)
+- No streaming endpoint (Phase 5)
+- No DB writes — request logs still go to stdout only, not PostgreSQL
+- No Prometheus metrics (Phase 6)
