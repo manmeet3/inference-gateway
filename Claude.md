@@ -1,139 +1,131 @@
 # LLM Inference Gateway
 
 ## Project Overview
-A production-grade LLM Inference Gateway — an API layer that sits between
-application code and multiple LLM backends (local Ollama models, Anthropic,
-OpenAI). It handles routing, fallback, rate limiting, semantic caching,
-streaming, and observability. This is infrastructure-first: the goal is a
-system that is reliable, cost-aware, and debuggable in production.
+A production-grade LLM Inference Gateway — an API layer that sits between application code and multiple LLM backends (local Ollama models, Anthropic Claude, OpenAI). It handles routing, fallback, rate limiting, semantic caching, streaming, and observability.
 
-This is not a demo. Every component should be built as if it will run in
-production on AWS EKS and be maintained by a team.
+This is infrastructure-first: the goal is a system that is reliable, cost-aware, and debuggable in production, designed for deployment on AWS EKS with zero secrets in code.
+
+## Current Project Status
+- **Phase 1 (Foundation)**: Complete & Verified (FastAPI, Ollama provider, health endpoints, structlog JSON logging, Docker Compose dev stack).
+- **Phase 2 (Routing & Fallback)**: Complete & Verified (Anthropic + OpenAI httpx providers, complexity classifier, cost strategy, fallback chain, graceful degradation).
+- **Phase 3 (Caching)**: Next Up (Redis exact cache + Sentence-Transformers semantic cache with cosine similarity).
+- **Phase 4 (Rate Limiting & Quotas)**: Planned.
+- **Phase 5 (Streaming)**: Planned.
+- **Phase 6 (Observability & Metrics)**: Planned.
+- **Phase 7 (EKS Deploy & Infrastructure)**: Planned.
+
+---
 
 ## Tech Stack
+
 ### Core Application
 - **Language**: Python 3.12
 - **Framework**: FastAPI (async, SSE streaming support)
-- **Data validation**: Pydantic v2
-- **Async HTTP client**: httpx (for upstream LLM calls)
-- **Task queue**: Celery + Redis (for async logging, cost attribution jobs)
+- **Data Validation & Config**: Pydantic v2 & `pydantic-settings`
+- **Async HTTP Client**: `httpx` (uniform calls to upstream LLMs without vendor SDKs)
+- **Task Queue**: Celery + Redis (for async request logging persistence and cost attribution jobs)
 
 ### LLM Backends
-- **Local**: Ollama (Qwen2.5 or llama3.2 via REST API)
-- **Cloud**: Anthropic Claude (claude-sonnet-4-6), OpenAI (gpt-4o)
-- **Abstraction**: a unified LLMProvider interface so backends are 
-  swappable without touching routing logic
+- **Local**: Ollama (`llama3.2` default, `qwen2.5`) via REST API
+- **Cloud**: Anthropic Claude (`claude-sonnet-5` default), OpenAI (`gpt-4o` default)
+- **Abstraction**: Unified `LLMProvider` abstract interface with standardized `Message`, `LLMResponse`, and `ProviderError` types
 
-### Caching
-- **Redis** (AWS ElastiCache in prod) — two layers:
-  - Exact cache: hash of (model + prompt) → cached response
-  - Semantic cache: embed the incoming query, cosine similarity search
-    against cached query embeddings, return hit if similarity > threshold
-- **Embedding model for semantic cache**: local sentence-transformers
-  (all-MiniLM-L6-v2) — no external call, no cost, no latency
+### Caching (Phase 3)
+- **Redis** (AWS ElastiCache in production) — two layers:
+  - **Exact Cache**: Hash of `(model + prompt)` -> cached response with TTL
+  - **Semantic Cache**: Local `sentence-transformers` embeddings (`all-MiniLM-L6-v2`), cosine similarity search against cached query vectors (threshold >= `0.92`, configurable)
 
 ### Storage & State
-- **PostgreSQL** (AWS RDS in prod) — request logs, cost attribution,
-  user quota state, model performance metrics
-- **Redis** — rate limit counters (sliding window), quota state (fast path)
+- **PostgreSQL** (AWS RDS in production): Request logs, cost attribution, user quota state, model performance metrics
+- **Redis**: Rate limit counters (sliding window), fast-path user quota state, cache storage
 
 ### Observability
-- **Structured logging**: structlog → JSON, every request gets a
-  trace_id, user_id, model, tokens_in, tokens_out, latency_ms, cache_hit
-- **Metrics**: Prometheus client → expose /metrics endpoint
-- **Tracing**: OpenTelemetry SDK → OTLP export to Grafana Tempo
-- **Dashboards**: Grafana (latency p50/p95/p99, cost per model per user,
-  cache hit rate, error rate, fallback rate)
+- **Structured Logging**: `structlog` -> JSON to stdout with `trace_id`, `user_id`, `model_used`, `classification`, `provider`, `providers_attempted`, `fallback`, `fallback_reason`, `tokens_in`, `tokens_out`, `latency_ms`, `cache_hit`
+- **Metrics**: Prometheus client exposing `/metrics` (latency p50/p95/p99 histograms, token usage counters, fallback & cache hit rates)
+- **Distributed Tracing**: OpenTelemetry SDK -> OTLP export to Grafana Tempo / OpenTelemetry Collector
+- **Dashboards**: Grafana (latency p50/p95/p99, cost per model per user, cache hit rate, error rate, fallback rate)
 
 ### Infrastructure
-- **Container runtime**: Docker
-- **Orchestration**: Kubernetes on AWS EKS
-- **IaC**: Terraform (EKS cluster, RDS, ElastiCache, IAM roles)
+- **Container Runtime**: Docker (multi-stage non-root container)
+- **Orchestration**: Kubernetes on AWS EKS (Deployment, Service, Ingress, HPA)
+- **IaC**: Terraform (EKS cluster, RDS, ElastiCache, IAM least-privilege roles)
 - **Secrets**: AWS Secrets Manager + External Secrets Operator in K8s
-- **Ingress**: AWS ALB Ingress Controller + nginx ingress
-- **CI/CD**: GitHub Actions → build image → push to ECR → kubectl apply
-- **Local dev**: docker-compose (app + postgres + redis + ollama)
+- **Local Dev**: `docker-compose.yml` (`app` + `postgres` + `redis` + `ollama` + `ollama_init`)
+
+---
 
 ## Directory Structure
+
 ```
 gateway/
 ├── app/
-│   ├── main.py                  # FastAPI app, lifespan, middleware
+│   ├── main.py                  # FastAPI app, lifespan hooks, middleware
 │   ├── config.py                # Settings via pydantic-settings, env vars
 │   ├── api/
 │   │   ├── routes/
 │   │   │   ├── chat.py          # POST /v1/chat — main inference endpoint
-│   │   │   ├── stream.py        # POST /v1/chat/stream — SSE streaming
-│   │   │   ├── health.py        # GET /health, /ready
-│   │   │   └── admin.py         # GET /admin/usage, /admin/costs
+│   │   │   ├── stream.py        # POST /v1/chat/stream — SSE streaming (Phase 5)
+│   │   │   ├── health.py        # GET /health, GET /ready
+│   │   │   └── admin.py         # GET /admin/usage, /admin/costs (Phase 4)
 │   │   └── middleware/
-│   │       ├── auth.py          # API key validation, user extraction
-│   │       ├── rate_limit.py    # Sliding window rate limiter via Redis
+│   │       ├── auth.py          # API key validation & user extraction (Phase 4)
+│   │       ├── rate_limit.py    # Sliding window rate limiter via Redis (Phase 4)
 │   │       └── tracing.py       # OTel trace context injection
 │   ├── providers/
-│   │   ├── base.py              # Abstract LLMProvider interface
-│   │   ├── anthropic.py         # Anthropic backend impl
-│   │   ├── openai.py            # OpenAI backend impl
-│   │   └── ollama.py            # Ollama local backend impl
+│   │   ├── base.py              # Abstract LLMProvider interface & ProviderError
+│   │   ├── ollama.py            # Local Ollama client (httpx)
+│   │   ├── anthropic.py         # Anthropic Claude client (httpx)
+│   │   └── openai.py            # OpenAI client (httpx)
 │   ├── routing/
-│   │   ├── router.py            # Core routing logic — picks backend
-│   │   ├── strategies.py        # CostStrategy, LatencyStrategy,
-│   │   │                        # TaskTypeStrategy, FallbackChain
-│   │   └── classifier.py        # Classifies query complexity/type
-│   ├── cache/
+│   │   ├── router.py            # Core Router — model ownership & fallback orchestration
+│   │   ├── strategies.py        # CostStrategy, FallbackChain, AllProvidersFailedError
+│   │   └── classifier.py        # ComplexityClassifier (heuristics: length + keywords)
+│   ├── cache/                   # (Phase 3)
 │   │   ├── exact.py             # Hash-based exact cache
-│   │   ├── semantic.py          # Embedding similarity cache
+│   │   ├── semantic.py          # Embedding similarity cache (MiniLM-L6-v2)
 │   │   └── manager.py           # Cache read/write orchestration
 │   ├── observability/
-│   │   ├── logging.py           # structlog config, request logger
-│   │   ├── metrics.py           # Prometheus counters/histograms
-│   │   └── tracing.py           # OTel tracer setup
+│   │   ├── logging.py           # structlog JSON configuration
+│   │   ├── metrics.py           # Prometheus counters/histograms (Phase 6)
+│   │   └── tracing.py           # OpenTelemetry tracer setup
 │   ├── db/
-│   │   ├── models.py            # SQLAlchemy ORM models
-│   │   ├── session.py           # Async session factory
-│   │   └── migrations/          # Alembic migrations
+│   │   ├── models.py            # SQLAlchemy ORM models (Phase 7)
+│   │   ├── session.py           # Async session & engine pool factory
+│   │   └── migrations/          # Alembic migrations (Phase 7)
 │   └── workers/
-│       └── cost_attribution.py  # Celery task: async cost logging
-├── infra/
-│   ├── terraform/
-│   │   ├── eks.tf
-│   │   ├── rds.tf
-│   │   ├── elasticache.tf
-│   │   └── variables.tf
-│   └── k8s/
-│       ├── deployment.yaml
-│       ├── service.yaml
-│       ├── ingress.yaml
-│       ├── hpa.yaml             # Horizontal pod autoscaler
-│       └── secrets-store.yaml   # External Secrets Operator config
+│       └── cost_attribution.py  # Celery task: async cost logging (Phase 7)
+├── infra/                       # (Phase 7)
+│   ├── terraform/               # EKS, RDS, ElastiCache, IAM
+│   └── k8s/                     # Deployment, Service, Ingress, HPA, External Secrets
 ├── tests/
-│   ├── unit/
-│   ├── integration/
+│   ├── unit/                    # Unit tests (test_routing.py, etc.)
+│   ├── integration/             # End-to-end integration tests
 │   └── load/                    # k6 load test scripts
-├── docker-compose.yml           # Local dev: app + postgres + redis + ollama
-├── Dockerfile
+├── docker-compose.yml           # Local dev: app + postgres + redis + ollama + ollama_init
+├── Dockerfile                   # Gateway Dockerfile
 └── .github/workflows/
-    └── deploy.yaml              # CI: test → build → push ECR → deploy EKS
+    └── deploy.yaml              # CI/CD: test → build → push ECR → deploy EKS
 ```
 
+---
+
 ## Key Design Constraints
-- All provider API keys come from environment variables only — never in code
-- Every request must be logged with enough context to reconstruct cost and
-  debug failures post-hoc
-- The routing layer must be testable in isolation — no LLM calls in unit tests
-- Streaming and non-streaming must share the same routing and caching logic
-- The system must degrade gracefully: if Redis is down, bypass cache and
-  continue; if a provider is down, fall to next in chain; if all providers
-  are down, return 503 with a structured error body
-- Semantic cache threshold (0.92) must be configurable — not hardcoded
+- **Zero Hardcoded Secrets**: All provider API keys come from environment variables only.
+- **Post-Hoc Auditability**: Every request is logged with full context to reconstruct cost and debug failures.
+- **Isolated Routing Tests**: Routing and fallback logic is unit-testable in memory with no network or LLM dependencies.
+- **Unified Logic Across Transports**: Streaming and non-streaming share the exact same routing, rate-limiting, and caching logic.
+- **Graceful System Degradation**:
+  - Redis down: bypass cache and continue.
+  - Provider failure / timeout: fall through to the next candidate in the chain.
+  - Cloud keys unset: gracefully exclude cloud providers and route via Ollama.
+  - All providers down: return HTTP 503 with structured JSON error details.
+- **Configurable Heuristics**: Classification thresholds, semantic cache cutoff (default `0.92`), token caps, and timeouts are configurable via environment variables.
+
+---
 
 ## What Good Looks Like
-- A request comes in, gets classified as "simple", routes to local Ollama,
-  hits the semantic cache, returns in <50ms with a cache_hit: true log line
-- A complex request routes to Claude, streams back tokens, logs the full
-  reconstructed response with token counts and latency on completion
-- A provider outage triggers automatic fallback, logged with
-  fallback_reason: "upstream_timeout", zero user-visible errors
-- Grafana shows p99 latency, cost per model, cache hit rate, and fallback
-  rate on a single dashboard
-- All of this runs on EKS with zero secrets in the codebase
+- A request comes in, gets classified as "simple", routes to local Ollama, hits the semantic cache, and returns in <50ms with a `cache_hit: true` log line.
+- A complex request routes to Claude, streams back tokens, and logs the full reconstructed response with token counts and latency on completion.
+- A provider outage triggers automatic fallback, logged with `fallback_reason: "upstream_timeout"`, zero user-visible errors.
+- Grafana displays p99 latency, cost per model, cache hit rate, and fallback rate on a single dashboard.
+- All services run on EKS with zero secrets stored in codebase.
