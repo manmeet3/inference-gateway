@@ -27,9 +27,17 @@ class Settings(BaseSettings):
     # Routing — a query at/above this many characters is treated as "complex".
     classifier_complex_char_threshold: int = 400
 
+    # Caching (Phase 3)
+    enable_cache: bool = True
+    exact_cache_ttl_seconds: int = 3600
+    semantic_cache_ttl_seconds: int = 86400
+    semantic_cache_threshold: float = 0.92
+    semantic_cache_model_name: str = "all-MiniLM-L6-v2"
+
     log_level: str = "INFO"
     otlp_endpoint: str | None = None
     service_name: str = "inference-gateway"
+
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

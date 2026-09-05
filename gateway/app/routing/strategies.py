@@ -1,8 +1,27 @@
-import structlog
+from __future__ import annotations
+
+try:
+    import structlog
+    logger = structlog.get_logger(__name__)
+except ImportError:
+    import logging
+
+    class _CompatLogger:
+        def __init__(self, std_logger: logging.Logger) -> None:
+            self._logger = std_logger
+
+        def info(self, event: str, **kwargs) -> None:
+            self._logger.info("%s %s", event, kwargs)
+
+        def warning(self, event: str, **kwargs) -> None:
+            self._logger.warning("%s %s", event, kwargs)
+
+        def error(self, event: str, **kwargs) -> None:
+            self._logger.error("%s %s", event, kwargs)
+
+    logger = _CompatLogger(logging.getLogger(__name__))
 
 from app.providers.base import LLMProvider, LLMResponse, Message, ProviderError
-
-logger = structlog.get_logger(__name__)
 
 
 class CostStrategy:

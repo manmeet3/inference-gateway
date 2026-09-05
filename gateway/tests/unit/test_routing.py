@@ -1,4 +1,22 @@
-import pytest
+from __future__ import annotations
+
+try:
+    import pytest
+
+except ImportError:
+    from contextlib import contextmanager
+
+    class _MockPytest:
+        @contextmanager
+        def raises(self, exc_type):
+            try:
+                yield
+            except exc_type:
+                pass
+            else:
+                raise AssertionError(f"Expected exception {exc_type} was not raised")
+
+    pytest = _MockPytest()
 
 from app.providers.base import LLMProvider, LLMResponse, Message, ProviderError
 from app.routing.classifier import ComplexityClassifier

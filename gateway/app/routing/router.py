@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from app.providers.base import LLMProvider, LLMResponse, Message
+
 from app.routing.classifier import ComplexityClassifier
 from app.routing.strategies import CostStrategy, FallbackChain
 

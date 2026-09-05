@@ -38,6 +38,37 @@ async def chat(body: ChatRequest, request: Request):
     start = time.monotonic()
     messages = [Message(role=m.role, content=m.content) for m in body.messages]
 
+    # 1. Cache lookup (Phase 3)
+    cache_manager = getattr(request.app.state, "cache_manager", None)
+    if cache_manager:
+        hit = await cache_manager.get(messages, model=body.model)
+        if hit is not None:
+            latency_ms = round((time.monotonic() - start) * 1000, 2)
+            resp = hit.response
+            logger.info(
+                "request_complete",
+                provider=resp.provider,
+                model_used=resp.model,
+                classification=None,
+                providers_attempted=[],
+                fallback=False,
+                fallback_reason=None,
+                tokens_in=resp.tokens_in,
+                tokens_out=resp.tokens_out,
+                latency_ms=latency_ms,
+                cache_hit=True,
+                cache_type=hit.cache_type,
+                similarity=hit.similarity,
+            )
+            return ChatResponse(
+                response=resp.content,
+                model_used=resp.model,
+                latency_ms=latency_ms,
+                tokens_in=resp.tokens_in,
+                tokens_out=resp.tokens_out,
+            )
+
+    # 2. Router & Fallback Chain
     try:
         result = await request.app.state.router.route(messages, requested_model=body.model)
     except AllProvidersFailedError as exc:
@@ -60,6 +91,10 @@ async def chat(body: ChatRequest, request: Request):
     resp = result.response
     fell_back = len(result.providers_attempted) > 1
 
+    # 3. Populate Cache
+    if cache_manager:
+        await cache_manager.set(messages, body.model, resp)
+
     logger.info(
         "request_complete",
         provider=resp.provider,
@@ -81,3 +116,4 @@ async def chat(body: ChatRequest, request: Request):
         tokens_in=resp.tokens_in,
         tokens_out=resp.tokens_out,
     )
+

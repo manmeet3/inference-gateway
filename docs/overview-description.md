@@ -41,13 +41,14 @@ This system is built infrastructure-first: cost-aware, highly available, debugga
 11. Resilient `FallbackChain` that catches `ProviderError` and cascades through backup candidates, raising `AllProvidersFailedError` (HTTP 503) only when all fail.
 12. Comprehensive request logging including `classification`, `provider`, `providers_attempted`, `fallback`, and `fallback_reason`.
 
-### Phase 3 — Caching `[NEXT UP]`
+### Phase 3 — Caching `[COMPLETED & VERIFIED]`
 13. **Exact Cache**: Hash `(model + prompt)` in Redis with configurable TTL.
 14. **Semantic Cache**: Compute local vector embeddings using `all-MiniLM-L6-v2`, perform cosine similarity search against cached embeddings, and return hit if similarity >= `0.92` (configurable).
 15. **Cache Metrics & Orchestration**: Cache manager checking exact cache first, then semantic cache; record cache hit status and latency savings in logs and metrics.
 16. **Admin Invalidation**: Invalidation routes to purge cache keys by pattern, user, or model.
 
-### Phase 4 — Rate Limiting and Quotas `[PLANNED]`
+### Phase 4 — Rate Limiting and Quotas `[NEXT UP]`
+
 17. Redis-backed sliding window rate limiter per `user_id` (requests/minute and tokens/day).
 18. Multi-tier token budget enforcement (`free`, `pro`, `internal`).
 19. Standardized HTTP 429 response with `Retry-After` header when limits are exceeded.

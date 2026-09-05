@@ -8,11 +8,12 @@ This is infrastructure-first: the goal is a system that is reliable, cost-aware,
 ## Current Project Status
 - **Phase 1 (Foundation)**: Complete & Verified (FastAPI, Ollama provider, health endpoints, structlog JSON logging, Docker Compose dev stack).
 - **Phase 2 (Routing & Fallback)**: Complete & Verified (Anthropic + OpenAI httpx providers, complexity classifier, cost strategy, fallback chain, graceful degradation).
-- **Phase 3 (Caching)**: Next Up (Redis exact cache + Sentence-Transformers semantic cache with cosine similarity).
-- **Phase 4 (Rate Limiting & Quotas)**: Planned.
+- **Phase 3 (Caching)**: Complete & Verified (Redis exact cache + Sentence-Transformers semantic cache with cosine similarity & exception shielding).
+- **Phase 4 (Rate Limiting & Quotas)**: Next Up.
 - **Phase 5 (Streaming)**: Planned.
 - **Phase 6 (Observability & Metrics)**: Planned.
 - **Phase 7 (EKS Deploy & Infrastructure)**: Planned.
+
 
 ---
 

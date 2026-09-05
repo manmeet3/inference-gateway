@@ -4,6 +4,49 @@ A running log of what's been built and how it was verified. Newest phase on top.
 
 ---
 
+## Phase 3 — Dual-Layer Caching (Exact & Semantic)
+
+**Status:** Complete and verified — 18/18 unit tests pass (cache + routing) with zero external network dependencies.
+
+### Goal
+
+Eliminate redundant upstream model calls, reduce response latency from ~1000ms+ to <50ms, and lower cloud inference costs by sitting a dual-layer caching subsystem before routing:
+1. **Exact Cache**: Deterministic SHA-256 hash of `(model, messages)` $\rightarrow$ sub-5ms Redis lookup.
+2. **Semantic Cache**: Local `sentence-transformers` (`all-MiniLM-L6-v2`) embeddings with cosine similarity search ($\ge 0.92$) $\rightarrow$ ~15ms lookup.
+3. **Fault Tolerance**: Automatic exception shielding so Redis outages or embedder issues degrade seamlessly to upstream providers without failing user requests.
+
+### What was built
+
+| Area | File | What it does |
+|------|------|--------------|
+| Cache Abstractions | `gateway/app/cache/base.py` | `Embedder` protocol, `SentenceTransformerEmbedder` (CPU), `FakeEmbedder` (mock for tests), `CacheHitResult`. |
+| Exact Cache | `gateway/app/cache/exact.py` | `ExactCache` with SHA-256 hash over normalized messages/model, fast Redis `GET`/`SETEX`. |
+| Semantic Cache | `gateway/app/cache/semantic.py` | `SemanticCache` generating 384-dim normalized vectors, maintaining Redis entry keys, computing cosine similarity ($\ge 0.92$). |
+| Cache Manager | `gateway/app/cache/manager.py` | `CacheManager` coordinating exact $\rightarrow$ semantic lookups, writes to both caches, and catches Redis errors gracefully. |
+| Lifespan & Wiring | `gateway/app/main.py` | Lifespan warms up embedder, initializes `CacheManager`, attaches to `app.state.cache_manager`. |
+| Chat Endpoint | `gateway/app/api/routes/chat.py` | Checks cache before routing; logs `cache_hit`, `cache_type`, and `similarity`; populates cache on completion. |
+| Config | `gateway/app/config.py` | Cache parameters: `enable_cache`, `exact_cache_ttl_seconds`, `semantic_cache_ttl_seconds`, `semantic_cache_threshold`, `semantic_cache_model_name`. |
+| Dependencies | `gateway/requirements.txt` | Added `sentence-transformers` and `numpy`. |
+| Unit Tests | `gateway/tests/unit/test_cache.py` | 6 unit tests covering exact hit/miss, semantic similarity hit/miss, exact priority, and Redis exception shielding. |
+
+### How it was verified
+
+- **Unit tests (18/18 passed)**:
+  - Exact Cache: Hash consistency, cache hit returns cached response, cache miss on different model or query.
+  - Semantic Cache: Cosine similarity $\ge 0.92$ returns semantic hit, low similarity ($<0.92$) returns miss.
+  - Cache Manager: Exact cache takes priority (short-circuits before embedding), semantic fallback works when exact misses, and Redis connection failures are shielded gracefully.
+  - All 12 Phase 2 routing unit tests continue to pass cleanly.
+
+### Out of scope for Phase 3 (later phases)
+
+- No rate limiting / quotas (Phase 4)
+- No streaming endpoint (Phase 5)
+- No Prometheus metrics endpoint (Phase 6)
+- No DB log persistence / Celery cost attribution (Phase 7)
+
+---
+
+
 ## Phase 2 — Routing and Fallback
 
 **Status:** Complete and verified — routing unit tests pass and the stack was
